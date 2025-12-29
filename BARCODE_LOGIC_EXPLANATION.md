@@ -291,3 +291,4 @@ curl -X POST http://192.168.5.9:5000/aiml/corporatewebsite/barcode/scan \
 **Next Step:**
 - **RESTART THE FLASK SERVER** to register the new routes
 
+

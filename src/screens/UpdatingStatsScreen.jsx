@@ -611,7 +611,16 @@ const UpdatingStatsScreen = ({ navigation, route }) => {
 
   // Helper to build a proper file part for FormData with correct mime/extension
   const buildFilePart = (asset, prefix) => {
-    if (!asset) return null;
+    if (!asset) {
+      console.warn(`⚠️ [buildFilePart] Asset is null for prefix: ${prefix}`);
+      return null;
+    }
+    
+    if (!asset.uri) {
+      console.error(`❌ [buildFilePart] Asset missing URI for prefix: ${prefix}`, asset);
+      return null;
+    }
+    
     const mimeType = asset.type || 'image/jpeg';
     let ext = 'jpg';
     const mimeMatch = mimeType.match(/image\/([a-zA-Z0-9+.-]+)/);
@@ -624,11 +633,31 @@ const UpdatingStatsScreen = ({ navigation, route }) => {
       }
     }
     const name = `${prefix}_${Date.now()}.${ext}`;
-    return {
-      uri: asset.uri,
+    
+    // Ensure URI is properly formatted for React Native
+    let uri = asset.uri;
+    // Handle file:// protocol if needed
+    if (uri.startsWith('file://')) {
+      // Keep file:// for React Native FormData
+      uri = uri;
+    } else if (Platform.OS === 'android' && !uri.startsWith('content://') && !uri.startsWith('file://')) {
+      // Android might need file:// prefix
+      uri = `file://${uri}`;
+    }
+    
+    const filePart = {
+      uri: uri,
       type: mimeType,
-      name,
+      name: name,
     };
+    
+    console.log(`✅ [buildFilePart] Created file part for ${prefix}:`, {
+      uri: uri.substring(0, 100) + '...',
+      type: mimeType,
+      name: name
+    });
+    
+    return filePart;
   };
 
   const handleDataSubmit = async () => {
@@ -725,10 +754,30 @@ const UpdatingStatsScreen = ({ navigation, route }) => {
         return;
       }
 
+      if (!uploadedImage.uri) {
+        Alert.alert('Error', 'Waste image is invalid. Please capture again.');
+        console.error('❌ [handleDataSubmit] uploadedImage missing URI:', uploadedImage);
+        return;
+      }
+
       if (!uploadedReceiptImage) {
         Alert.alert('Error', 'Please upload receipt image before submitting.');
         return;
       }
+
+      if (!uploadedReceiptImage.uri) {
+        Alert.alert('Error', 'Receipt image is invalid. Please capture again.');
+        console.error('❌ [handleDataSubmit] uploadedReceiptImage missing URI:', uploadedReceiptImage);
+        return;
+      }
+      
+      console.log('✅ [handleDataSubmit] All validations passed:', {
+        weight: weight,
+        hasWasteImage: !!uploadedImage,
+        wasteImageUri: uploadedImage.uri?.substring(0, 50) + '...',
+        hasReceiptImage: !!uploadedReceiptImage,
+        receiptImageUri: uploadedReceiptImage.uri?.substring(0, 50) + '...'
+      });
 
       // Additional validation
 
@@ -742,23 +791,41 @@ const UpdatingStatsScreen = ({ navigation, route }) => {
       const formData = new FormData();
       
       // Add text fields
-      formData.append('weight', parseFloat(weight).toString());
+      const weightValue = parseFloat(weight).toString();
+      formData.append('weight', weightValue);
+      console.log('📤 [handleDataSubmit] Adding weight to FormData:', weightValue);
+      
       // dl_no and vehicle_no are not required for this API
       
       // Add waste image (photo field)
       const wasteImagePart = buildFilePart(uploadedImage, 'photo');
       if (wasteImagePart) {
+        console.log('📤 [handleDataSubmit] Adding photo to FormData:', {
+          uri: wasteImagePart.uri,
+          type: wasteImagePart.type,
+          name: wasteImagePart.name
+        });
         formData.append('photo', wasteImagePart);
+      } else {
+        console.error('❌ [handleDataSubmit] wasteImagePart is null!');
       }
       
       // Add receipt image
       const receiptImagePart = buildFilePart(uploadedReceiptImage, 'receipt_image');
       if (receiptImagePart) {
+        console.log('📤 [handleDataSubmit] Adding receipt_image to FormData:', {
+          uri: receiptImagePart.uri,
+          type: receiptImagePart.type,
+          name: receiptImagePart.name
+        });
         formData.append('receipt_image', receiptImagePart);
+      } else {
+        console.error('❌ [handleDataSubmit] receiptImagePart is null!');
       }
 
       // Get authentication headers
       const authHeaders = getAuthHeaders();
+      console.log('📤 [handleDataSubmit] Auth headers:', Object.keys(authHeaders));
       
       // API endpoint with fallback handling
       const primaryBase = GLOBAL_BASE_URL;
@@ -769,7 +836,8 @@ const UpdatingStatsScreen = ({ navigation, route }) => {
       let lastError;
       for (const base of [primaryBase, fallbackBase]) {
         const API_URL = `${base}${endpointPath}`;
-        console.log(`Making request to: ${API_URL}`);
+        console.log(`📤 [handleDataSubmit] Making request to: ${API_URL}`);
+        console.log(`📤 [handleDataSubmit] FormData entries: weight=${weightValue}, hasPhoto=${!!wasteImagePart}, hasReceipt=${!!receiptImagePart}`);
         try {
           response = await fetch(API_URL, {
             method: 'POST',
@@ -780,19 +848,22 @@ const UpdatingStatsScreen = ({ navigation, route }) => {
             body: formData,
             signal: controller.signal,
           });
+          console.log(`📥 [handleDataSubmit] Response received from ${API_URL}, status: ${response.status}`);
           // If we got a response, break out (even if non-200; we'll handle below)
           break;
         } catch (err) {
+          console.error(`❌ [handleDataSubmit] Error from ${API_URL}:`, err);
           lastError = err;
           // Try next base URL only if network error
           continue;
         }
       }
       if (!response) {
+        console.error('❌ [handleDataSubmit] No response received from any endpoint');
         throw lastError || new Error('Network error');
       }
       
-      console.log('Response received, status:', response.status);
+      console.log('📥 [handleDataSubmit] Response received, status:', response.status);
       clearTimeout(timeoutId);
 
       // Parse response
@@ -800,12 +871,23 @@ const UpdatingStatsScreen = ({ navigation, route }) => {
       let responseText = '';
       try {
         responseText = await response.text();
+        console.log('📥 [handleDataSubmit] Response text length:', responseText.length);
+        console.log('📥 [handleDataSubmit] Response text (first 500 chars):', responseText.substring(0, 500));
+        
         if (!responseText || responseText.trim() === '') {
+          console.error('❌ [handleDataSubmit] Empty response from server');
           throw new Error('Empty response from server. Please try again.');
         }
         
         responseData = JSON.parse(responseText);
+        console.log('📥 [handleDataSubmit] Parsed response data:', {
+          status: responseData.status,
+          message: responseData.message,
+          hasData: !!responseData.data
+        });
       } catch (parseError) {
+        console.error('❌ [handleDataSubmit] Failed to parse response:', parseError);
+        console.error('❌ [handleDataSubmit] Response text was:', responseText);
         throw new Error('Invalid response from server. Please check your internet connection and try again.');
       }
 
@@ -999,9 +1081,10 @@ const UpdatingStatsScreen = ({ navigation, route }) => {
         
         // Don't show alert - DetailsScreen will handle the flow
       } else {
-        console.log('HTTP Status:', response.status);
-        console.log('Status Text:', response.statusText);
-        console.log('Error details:', responseData);
+        console.error('❌ [handleDataSubmit] Request failed!');
+        console.error('❌ [handleDataSubmit] HTTP Status:', response.status);
+        console.error('❌ [handleDataSubmit] Status Text:', response.statusText);
+        console.error('❌ [handleDataSubmit] Error details:', JSON.stringify(responseData, null, 2));
         
         let errorMsg = 'Failed to save pickup data';
         
@@ -1011,20 +1094,25 @@ const UpdatingStatsScreen = ({ navigation, route }) => {
           if (responseData?.message) {
             errorMsg += ` Details: ${responseData.message}`;
           }
+          console.error('❌ [handleDataSubmit] Server error (500):', responseData);
         } else if (response.status === 400) {
           errorMsg = 'Invalid data sent to server.';
           if (responseData?.message) {
             errorMsg = responseData.message;
           }
+          console.error('❌ [handleDataSubmit] Bad request (400):', responseData);
         } else if (response.status === 404) {
           errorMsg = 'API endpoint not found. Please contact support.';
+          console.error('❌ [handleDataSubmit] Endpoint not found (404)');
         } else if (response.status === 422) {
           errorMsg = 'Data validation failed on server.';
           if (responseData?.message) {
             errorMsg = responseData.message;
           }
+          console.error('❌ [handleDataSubmit] Validation failed (422):', responseData);
         } else if (response.status === 0) {
           errorMsg = 'Network error. Please check your internet connection and server availability.';
+          console.error('❌ [handleDataSubmit] Network error (0)');
         } else {
           // Generic error handling
           if (responseData?.message) {
@@ -1034,6 +1122,7 @@ const UpdatingStatsScreen = ({ navigation, route }) => {
           } else if (responseData?.details) {
             errorMsg = responseData.details;
           }
+          console.error(`❌ [handleDataSubmit] Unknown error (${response.status}):`, responseData);
         }
         
         throw new Error(`${errorMsg} (Status: ${response.status})`);
@@ -1043,6 +1132,8 @@ const UpdatingStatsScreen = ({ navigation, route }) => {
       console.error('=== PICKUP COMPLETION ERROR ===');
       console.error('Error name:', error?.name || 'Unknown');
       console.error('Error message:', error?.message || 'Unknown error');
+      console.error('Error stack:', error?.stack || 'No stack trace');
+      console.error('Full error object:', error);
       console.error('================================');
       
       let errorMessage = 'Failed to submit pickup data. Please try again.';

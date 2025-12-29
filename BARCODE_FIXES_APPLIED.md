@@ -123,3 +123,4 @@ Should return barcode data if it exists in database.
 
 Once the server is restarted, the 404 errors should be resolved and the barcode scanner will work correctly!
 
+
